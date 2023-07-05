@@ -48,8 +48,9 @@ class HookedWebSocket extends defaultWebSocket {
                 }
             })(ev.data)
             if (data && data.msg && data.msg && data.output) {
-                if (data.output.error) {
+                if (data.output.error || !data.success) {
                     console.error('WebSocket Error:', data)
+                    state.wsNotCleanOnce = true
                     this.close()
                 }
             }
@@ -67,12 +68,13 @@ class HookedWebSocket extends defaultWebSocket {
 
     set onclose(func) {
         websocketDescriptor.set.call(this, (ev, ...args) => {
-            if (state.wsNotAvailable) {
+            if (state.wsNotAvailable || state.wsNotCleanOnce) {
                 Object.defineProperty(ev, 'wasClean', {
                     value: false
                 })
                 console.log("ev.wasClean:", ev.wasClean)
             }
+            state.wsNotCleanOnce = false
             func(ev, ...args)
         })
     }
