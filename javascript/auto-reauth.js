@@ -3,89 +3,145 @@ const storageKey = "webui-auto-reauth"
 const state = storage.getItem(storageKey) ?
     JSON.parse(storage.getItem(storageKey)) :
     {
-        enable: false,
+        enable: true,
         user: "",
         password: "",
         intervalId: null,
     }
 
-const update = () => {
+const defaultFetch = fetch
+window.fetch = (input, init, ...args) => {
+    if (init && init.body && init.headers && init.headers["Content-Type"] === "application/json") {
+        const body = ((body) => {
+            try {
+                return JSON.parse(body)
+            } catch(e) {
+                return {}
+            }
+        })(init.body)
+
+        if (body.session_hash && body.fn_index) {
+            state.sessionHash = body.session_hash
+            state.fnIndex = body.fn_index
+        }
+    }
+    return defaultFetch(input, init, ...args)
+}
+
+const defaultWebSocket = WebSocket
+const websocketDescriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onclose')
+class HookedWebSocket extends defaultWebSocket {
+    constructor(...args) {
+        let retVal = super(...args)
+
+        if (state.wsNotAvailable) {
+            this.wasClean = false
+        }
+
+        this.addEventListener('message', (ev) => {
+            console.log("message received:", ev.data, state.wsNotAvailable)
+            const data = ((data) => {
+                try {
+                    return JSON.parse(data)
+                } catch(e) {
+                    return {}
+                }
+            })(ev.data)
+            if (data && data.msg && data.msg && data.output) {
+                if (data.output.error) {
+                    console.error('WebSocket Error:', data)
+                    this.close()
+                }
+            }
+        })
+
+        this.addEventListener('close', (ev) => {
+            console.log("websocket closed:", ev)
+            if (!ev.wasClean) {
+                console.log("websocket not available(close):", ev)
+                state.wsNotAvailable = true
+            }
+        })
+        return retVal
+    }
+
+    set onclose(func) {
+        websocketDescriptor.set.call(this, (ev, ...args) => {
+            if (state.wsNotAvailable) {
+                Object.defineProperty(ev, 'wasClean', {
+                    value: false
+                })
+                console.log("ev.wasClean:", ev.wasClean)
+            }
+            func(ev, ...args)
+        })
+    }
+}
+window.WebSocket = HookedWebSocket
+
+{(async () => {
+    const authInfo = await fetch("/auto_reauth_info").then(res => res.json())
+    if (authInfo.username && authInfo.password) {
+        state.user = authInfo.username
+        state.password = authInfo.password
+    }
+})()}
+
+const update = (button) => {
     if (state.intervalId !== null) {
         clearInterval(state.intervalId)
     }
-    state.intervalId = state.enable ?
-        setInterval(async () => {
-            const status = await fetch("/file=style.css?reauth-ping", {cache: "no-store"}).then(res => res.status)
-            if (status === 401) {
-                const formData = new FormData();
-                formData.append('username', state.user)
-                formData.append('password', state.password)
+    if (state.enable) {
+        button.textContent = "Auto-Reauth(Enable)"
+        state.intervalId = setInterval(
+            async () => {
+                const status = await fetch("/login_check", {cache: "no-store"}).then(res => res.status)
+                if (status === 401) {
+                    const formData = new FormData();
+                    formData.append('username', state.user)
+                    formData.append('password', state.password)
 
-                const result = await fetch("/login", {
-                    method: "POST",
-                    body: formData
-                }).then(res => res.json())
-            }
-        }, 30 * 1000) : null
+                    const result = await fetch("/login", {
+                        method: "POST",
+                        body: formData
+                    }).then(res => res.json())
+
+                    console.log("ws available")
+                    state.wsNotAvailable = false
+
+                    if (!state.sessionHash || !state.fnIndex) {
+                        console.error("session information not valid")
+                        return
+                    }
+
+                    const reset = await fetch("/reset", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            session_hash: state.sessionHash,
+                            fn_index: state.fnIndex
+                        })
+                    })
+                }
+            },
+            5 * 1000
+        )
+    } else {
+        button.textContent = "Auto-Reauth(Disable)"
+        state.intervalId =  null
+    }
 }
 
 const createView = () => {
     const container = document.createElement('div')
-    const header = document.createElement('header')
-    const body = document.createElement('section')
-
-    container.appendChild(header)
-    container.appendChild(body)
-
-    header.textContent = "webui-auto-reauth"
-    header.addEventListener('click', (ev) => {
-        if (body.style.display === "none") {
-            body.style.display = "block"
-        } else {
-            body.style.display = 'none'
-        }
-    })
-
-    const newLine = (container) => {
-        container.appendChild(document.createElement('br'))
-    }
-
-    const enable = document.createElement('input')
-    enable.type = "checkbox"
-    enable.checked = state.enable
-    const enableLabel = document.createElement('label')
-    enableLabel.textContent = "Enable"
-    enableLabel.prepend(enable)
-    body.appendChild(enableLabel)
-
-    newLine(body)
-
-    const user = document.createElement('input')
-    user.type = "text"
-    user.placeholder = "username"
-    user.value = state.user
-    body.appendChild(user)
-
-    newLine(body)
-
-    const password = document.createElement('input')
-    password.type = "password"
-    password.placeholder = "password"
-    password.value = state.password
-    body.appendChild(password)
-
-    newLine(body)
-
     const button = document.createElement('button')
-    button.textContent = "Update State"
     button.addEventListener('click', (ev) => {
-        state.enable = enable.checked
-        state.user = user.value
-        state.password = password.value
-        storage.setItem(storageKey, JSON.stringify(state))
-        update()
+        state.enable = !state.enable
+        update(ev.target)
     })
-    body.appendChild(button)
+    container.appendChild(button)
 
     Object.assign(
         container.style,
@@ -101,7 +157,7 @@ const createView = () => {
     )
 
     document.body.appendChild(container)
-    update()
+    update(button)
 }
 
 onUiLoaded(createView)
