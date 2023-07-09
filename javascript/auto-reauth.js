@@ -1,13 +1,13 @@
 const storage = sessionStorage
 const storageKey = "webui-auto-reauth"
-const state = storage.getItem(storageKey) ?
-    JSON.parse(storage.getItem(storageKey)) :
-    {
-        enable: true,
-        user: "",
-        password: "",
-        intervalId: null,
-    }
+const state = {
+    count: 0,
+    enable: true,
+    user: "",
+    password: "",
+    intervalId: null,
+}
+Object.assign(state, storage.getItem(storageKey) || {})
 
 const defaultFetch = fetch
 window.fetch = (input, init, ...args) => {
@@ -39,7 +39,6 @@ class HookedWebSocket extends defaultWebSocket {
         }
 
         this.addEventListener('message', (ev) => {
-            console.log("message received:", ev.data, state.wsNotAvailable)
             const data = ((data) => {
                 try {
                     return JSON.parse(data)
@@ -57,9 +56,7 @@ class HookedWebSocket extends defaultWebSocket {
         })
 
         this.addEventListener('close', (ev) => {
-            console.log("websocket closed:", ev)
             if (!ev.wasClean) {
-                console.log("websocket not available(close):", ev)
                 state.wsNotAvailable = true
             }
         })
@@ -72,7 +69,6 @@ class HookedWebSocket extends defaultWebSocket {
                 Object.defineProperty(ev, 'wasClean', {
                     value: false
                 })
-                console.log("ev.wasClean:", ev.wasClean)
             }
             state.wsNotCleanOnce = false
             func(ev, ...args)
@@ -94,7 +90,7 @@ const update = (button) => {
         clearInterval(state.intervalId)
     }
     if (state.enable) {
-        button.textContent = "Auto-Reauth(Enable)"
+        button.textContent = `Auto-Reauth(Enable): ${state.count}`
         state.intervalId = setInterval(
             async () => {
                 const status = await fetch("/login_check", {cache: "no-store"}).then(res => res.status)
@@ -108,8 +104,9 @@ const update = (button) => {
                         body: formData
                     }).then(res => res.json())
 
-                    console.log("ws available")
                     state.wsNotAvailable = false
+                    state.count++
+                    this.update(button)
 
                     if (!state.sessionHash || !state.fnIndex) {
                         console.error("session information not valid")
